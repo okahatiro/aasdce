@@ -1,162 +1,161 @@
 /*:
- * @plugindesc DualScreen3DS - Enable and fix Corridor3D sprite rendering
+ * @plugindesc DualScreen3DS - Fix texture() method collision with PixiJS
  * @author GitHub Copilot
  * @help
- * Ensures Sprite_Corridor3D is properly initialized and rendered.
- * Prevents crash when advancing stages if the 3D background is not set up.
+ * Fixes the collision between Sprite_Corridor3D.texture() method and
+ * PixiJS Sprite.texture property that causes "Cannot read property 'trim' of null".
  *
  * Place this plugin BELOW DualScreen3DS.js in the Plugin Manager.
  *
  */
 
 (() => {
-  const PLUGIN_NAME = 'DualScreen3DS_Corridor3DFix';
+  const PLUGIN_NAME = 'DualScreen3DS_TextureCollisionFix';
 
-  // Hook into the battle scene initialization to ensure Corridor3D is created
-  const waitForScene = () => {
-    if (!window.Scene_Battle || !window.Spriteset_Battle) {
-      setTimeout(waitForScene, 50);
+  const waitForSprite = () => {
+    if (!window.Sprite_Corridor3D || !window.Sprite_Corridor3D.prototype) {
+      setTimeout(waitForSprite, 50);
       return;
     }
-    patchBattleScene();
+    fixTextureCollision();
   };
 
-  const patchBattleScene = () => {
-    // Patch Spriteset_Battle to ensure Corridor3D sprite is always present
-    const _orig_createBattleback = Spriteset_Battle.prototype.createBattleback;
+  const fixTextureCollision = () => {
+    const proto = Sprite_Corridor3D.prototype;
     
-    Spriteset_Battle.prototype.createBattleback = function() {
-      // Call original
-      if (_orig_createBattleback) {
-        _orig_createBattleback.call(this);
+    console.log(`[${PLUGIN_NAME}] Fixing texture collision...`);
+
+    // Store the original texture() method with a different name to avoid collision
+    if (typeof proto.texture === 'function') {
+      proto._getCorridorTexture = proto.texture;
+      delete proto.texture; // Remove the method so PixiJS texture property can work
+      console.log(`[${PLUGIN_NAME}] Renamed texture() method to _getCorridorTexture()`);
+    }
+
+    // Patch initialize to ensure proper texture setup
+    const _orig_initialize = proto.initialize;
+    proto.initialize = function() {
+      if (_orig_initialize) {
+        _orig_initialize.call(this);
       }
 
-      // Ensure Corridor3D is always present
-      if (!this._corridor3D) {
-        console.log(`[${PLUGIN_NAME}] Creating Corridor3D sprite...`);
+      // Ensure texture property is set to a valid PixiJS texture
+      if (!this.texture || this.texture === null || this.texture === undefined) {
+        // Create a minimal valid texture
+        const canvas = document.createElement('canvas');
+        canvas.width = 1;
+        canvas.height = 1;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = 'rgba(0, 0, 0, 0)';
+        ctx.fillRect(0, 0, 1, 1);
         
-        if (window.Sprite_Corridor3D) {
-          this._corridor3D = new Sprite_Corridor3D();
-          this.addChild(this._corridor3D);
-        } else {
-          console.warn(`[${PLUGIN_NAME}] Sprite_Corridor3D not found`);
-        }
+        const baseTexture = new PIXI.BaseTexture(canvas);
+        this.texture = new PIXI.Texture(baseTexture);
+        console.log(`[${PLUGIN_NAME}] Created fallback texture in initialize()`);
       }
     };
 
-    // Patch update to safely handle Corridor3D during stage transitions
-    const _orig_update = Spriteset_Battle.prototype.update;
-    Spriteset_Battle.prototype.update = function() {
+    // Patch update to guard against texture becoming null
+    const _orig_update = proto.update;
+    proto.update = function() {
       try {
+        // Guard: ensure texture is valid before update
+        if (!this.texture || this.texture === null) {
+          const canvas = document.createElement('canvas');
+          canvas.width = 1;
+          canvas.height = 1;
+          const ctx = canvas.getContext('2d');
+          ctx.fillStyle = 'rgba(0, 0, 0, 0)';
+          ctx.fillRect(0, 0, 1, 1);
+          
+          const baseTexture = new PIXI.BaseTexture(canvas);
+          this.texture = new PIXI.Texture(baseTexture);
+          console.log(`[${PLUGIN_NAME}] Restored null texture in update()`);
+        }
+
         if (_orig_update) {
           _orig_update.call(this);
         }
-        
-        // Ensure Corridor3D still exists after update
-        if (this._corridor3D) {
-          if (!this.contains(this._corridor3D)) {
-            console.warn(`[${PLUGIN_NAME}] Corridor3D was removed, re-adding...`);
-            this.addChild(this._corridor3D);
-          }
-          
-          // Ensure it has valid content
-          if (!this._corridor3D.bitmap) {
-            const dummy = new Bitmap(Graphics.width, Graphics.height);
-            dummy.fillAll('rgba(0, 0, 0, 0.5)');
-            this._corridor3D.bitmap = dummy;
-          }
-        }
       } catch (e) {
-        console.warn(`[${PLUGIN_NAME}] Error in Spriteset_Battle.update:`, e);
+        console.warn(`[${PLUGIN_NAME}] Error in update():`, e);
       }
     };
 
-    // Intercept stage transition to handle Corridor3D refresh
-    if (window.BattleManager && !window.BattleManager._copilotPatched) {
-      const _orig_nextStage = BattleManager.nextStage;
-      BattleManager.nextStage = function() {
-        console.log(`[${PLUGIN_NAME}] Stage transitioning...`);
-        
-        // Get current scene
-        const scene = SceneManager._scene;
-        if (scene && scene._spriteset && scene._spriteset._corridor3D) {
-          const corridor = scene._spriteset._corridor3D;
-          console.log(`[${PLUGIN_NAME}] Refreshing Corridor3D...`);
-          
-          // Ensure bitmap is valid
-          if (!corridor.bitmap || corridor.bitmap === null || corridor.bitmap === undefined) {
-            const dummy = new Bitmap(Graphics.width, Graphics.height);
-            dummy.fillAll('rgba(0, 0, 0, 0.5)');
-            corridor.bitmap = dummy;
-          }
-          
-          // Reset texture if needed
-          if (corridor.texture && corridor.texture === null) {
-            corridor.texture = PIXI.Texture.WHITE;
-          }
+    // Intercept any method that might set texture to null
+    const _orig_setBitmap = proto.setBitmap;
+    if (_orig_setBitmap) {
+      proto.setBitmap = function(bitmap) {
+        if (_orig_setBitmap) {
+          _orig_setBitmap.call(this, bitmap);
         }
-        
-        // Call original
-        if (_orig_nextStage) {
-          _orig_nextStage.call(this);
+
+        // Ensure texture is valid after bitmap change
+        if (!this.texture || this.texture === null) {
+          if (bitmap && bitmap._canvas) {
+            const baseTexture = new PIXI.BaseTexture(bitmap._canvas);
+            this.texture = new PIXI.Texture(baseTexture);
+          } else {
+            const canvas = document.createElement('canvas');
+            canvas.width = 1;
+            canvas.height = 1;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = 'rgba(0, 0, 0, 0)';
+            ctx.fillRect(0, 0, 1, 1);
+            
+            const baseTexture = new PIXI.BaseTexture(canvas);
+            this.texture = new PIXI.Texture(baseTexture);
+          }
         }
       };
-      
-      BattleManager._copilotPatched = true;
     }
 
-    console.log(`[${PLUGIN_NAME}] Successfully patched Battle Scene`);
-  };
+    // Override _calculateBounds to catch the error before it crashes
+    const _orig_calculateBounds = proto._calculateBounds;
+    if (_orig_calculateBounds) {
+      proto._calculateBounds = function() {
+        try {
+          // Ensure texture is never null when calculating bounds
+          if (!this.texture || this.texture === null) {
+            const canvas = document.createElement('canvas');
+            canvas.width = 1;
+            canvas.height = 1;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = 'rgba(0, 0, 0, 0)';
+            ctx.fillRect(0, 0, 1, 1);
+            
+            const baseTexture = new PIXI.BaseTexture(canvas);
+            this.texture = new PIXI.Texture(baseTexture);
+          }
 
-  // Also ensure Sprite_Corridor3D has proper fallbacks
-  const patchSpriteCorridor3D = () => {
-    if (!window.Sprite_Corridor3D) {
-      console.warn(`[${PLUGIN_NAME}] Sprite_Corridor3D not available`);
-      return;
+          return _orig_calculateBounds.call(this);
+        } catch (e) {
+          const errMsg = String(e);
+          if (errMsg.includes('trim')) {
+            console.warn(`[${PLUGIN_NAME}] Caught trim() error in _calculateBounds, applying fallback`);
+            
+            // Last resort: set PIXI.Texture.WHITE
+            if (!this.texture) {
+              this.texture = PIXI.Texture.WHITE;
+            }
+            
+            // Return minimal bounds
+            if (!this._bounds) {
+              this._bounds = new PIXI.Rectangle(0, 0, 1, 1);
+            }
+            return this._bounds;
+          }
+          throw e;
+        }
+      };
     }
 
-    const proto = Sprite_Corridor3D.prototype;
-
-    // Override initialize to ensure valid state
-    const _orig_init = proto.initialize;
-    proto.initialize = function() {
-      if (_orig_init) {
-        _orig_init.call(this);
-      }
-
-      // Fallback: ensure bitmap exists
-      if (!this.bitmap) {
-        this.bitmap = new Bitmap(Graphics.width, Graphics.height);
-        this.bitmap.fillAll('rgba(0, 0, 0, 0.5)');
-      }
-
-      // Fallback: ensure texture exists
-      if (!this.texture) {
-        this.texture = PIXI.Texture.WHITE;
-      }
-    };
-
-    // Safe bitmap setter
-    proto.setBitmap = proto.setBitmap || function(bitmap) {
-      if (!bitmap) {
-        this.bitmap = new Bitmap(1, 1);
-        this.bitmap.fillAll('rgba(0, 0, 0, 0)');
-      } else {
-        this.bitmap = bitmap;
-      }
-    };
-
-    console.log(`[${PLUGIN_NAME}] Patched Sprite_Corridor3D`);
+    console.log(`[${PLUGIN_NAME}] Successfully patched Sprite_Corridor3D`);
   };
 
-  // Start patching
+  // Start patching when ready
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => {
-      waitForScene();
-      setTimeout(patchSpriteCorridor3D, 100);
-    });
+    document.addEventListener('DOMContentLoaded', waitForSprite);
   } else {
-    waitForScene();
-    setTimeout(patchSpriteCorridor3D, 100);
+    waitForSprite();
   }
 })();
